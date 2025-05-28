@@ -7,9 +7,17 @@ import 'package:camera/camera.dart';
 import 'package:video_player/video_player.dart';
 import 'package:chewie/chewie.dart';
 
+// Pages
+import 'pages/image_pose_page.dart';
+import 'pages/video_pose_page.dart';
+import 'pages/camera_pose_page.dart';
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  
+  // Ensure all cameras are available before starting app
   final cameras = await availableCameras();
+  
   runApp(MyApp(cameras: cameras));
 }
 
@@ -23,10 +31,59 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'Pose Detection',
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
         useMaterial3: true,
       ),
-      home: PoseDetectionHome(cameras: cameras),
+      routes: {
+        '/': (context) => const HomePage(),
+        '/image': (context) => const ImagePosePage(),
+        '/video': (context) => const VideoPosePage(),
+        '/camera': (context) => CameraPosePage(cameras: cameras),
+      },
+      initialRoute: '/',
+    );
+  }
+}
+
+class HomePage extends StatelessWidget {
+  const HomePage({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Pose Detection Demo'),
+        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+      ),
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Text(
+              'Select a mode:',
+              style: TextStyle(fontSize: 24),
+            ),
+            const SizedBox(height: 40),
+            ElevatedButton(
+              onPressed: () => Navigator.pushNamed(context, '/image'),
+              style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 50, vertical: 15)),
+              child: const Text('Image Pose Detection', style: TextStyle(fontSize: 18)),
+            ),
+            const SizedBox(height: 20),
+            ElevatedButton(
+              onPressed: () => Navigator.pushNamed(context, '/video'),
+              style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 50, vertical: 15)),
+              child: const Text('Video Pose Detection', style: TextStyle(fontSize: 18)),
+            ),
+            const SizedBox(height: 20),
+            ElevatedButton(
+              onPressed: () => Navigator.pushNamed(context, '/camera'),
+              style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 50, vertical: 15)),
+              child: const Text('Live Camera Detection', style: TextStyle(fontSize: 18)),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

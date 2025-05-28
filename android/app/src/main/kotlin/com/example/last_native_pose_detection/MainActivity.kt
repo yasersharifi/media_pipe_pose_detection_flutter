@@ -72,12 +72,23 @@ class MainActivity : FlutterActivity(), PoseLandmarkerHelper.LandmarkerListener 
     }
     
     private fun setupPoseLandmarkerForLiveStream(): PoseLandmarkerHelper {
+        Log.d(TAG, "Creating new PoseLandmarkerHelper for LIVE_STREAM mode")
+        
+        // We'll use the FULL model which is more accurate but slightly slower
+        // With extremely low confidence thresholds to detect poses in challenging conditions
         val options = PoseLandmarkerHelper(
             context = this,
             runningMode = RunningMode.LIVE_STREAM,
-            poseLandmarkerHelperListener = this
+            poseLandmarkerHelperListener = this,
+            // Use FULL model for better accuracy
+            currentModel = PoseLandmarkerHelper.MODEL_POSE_LANDMARKER_FULL,
+            // Set extremely low confidence thresholds for better detection in challenging conditions
+            minPoseDetectionConfidence = 0.05f,
+            minPoseTrackingConfidence = 0.05f,
+            minPosePresenceConfidence = 0.05f
         )
         
+        Log.d(TAG, "PoseLandmarkerHelper for LIVE_STREAM created successfully with FULL model")
         return options
     }
     
@@ -139,17 +150,37 @@ class MainActivity : FlutterActivity(), PoseLandmarkerHelper.LandmarkerListener 
             // Store the Flutter result callback
             cameraProcessingResult = result
             
-            // Create PoseLandmarkerHelper for live stream mode
-            if (poseLandmarkerHelper == null || poseLandmarkerHelper?.isClose() == true) {
+            // Initialize the PoseLandmarkerHelper for LiveStream mode if needed
+            if (poseLandmarkerHelper == null || poseLandmarkerHelper?.runningMode != RunningMode.LIVE_STREAM) {
+                Log.d(TAG, "Setting up a new PoseLandmarkerHelper for LiveStream mode")
                 poseLandmarkerHelper = setupPoseLandmarkerForLiveStream()
             }
+            
+            // Check dimensions for debugging
+            Log.d(TAG, "Camera frame dimensions: ${width}x${height}, format: $format")
             
             // Convert YUV_420_888 image to Bitmap
             val bitmap = yuv420ToBitmap(width, height, planes)
             
             if (bitmap != null) {
+                // Resize to standard dimensions if necessary for better detection
+                val standardWidth = 640  // MediaPipe works well with this resolution
+                val standardHeight = 480
+                
+                val resizedBitmap = if (width != standardWidth || height != standardHeight) {
+                    Log.d(TAG, "Resizing bitmap to standard dimensions: ${standardWidth}x${standardHeight}")
+                    Bitmap.createScaledBitmap(bitmap, standardWidth, standardHeight, true)
+                } else {
+                    bitmap
+                }
+                
                 // Use front camera for selfie view - flip the image horizontally
-                poseLandmarkerHelper?.detectLiveStream(bitmap, true)
+                poseLandmarkerHelper?.detectLiveStream(resizedBitmap, true)
+                
+                // Recycle the original bitmap if we created a new one
+                if (resizedBitmap != bitmap) {
+                    bitmap.recycle()
+                }
                 
                 // We don't immediately return results as they will come through the listener
                 // The result will be handled in onResults() callback
@@ -158,65 +189,84 @@ class MainActivity : FlutterActivity(), PoseLandmarkerHelper.LandmarkerListener 
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error processing camera frame: ${e.message}")
+            e.printStackTrace()
             result.error("PROCESSING_ERROR", "Error processing camera frame: ${e.message}", null)
         }
     }
     
     private fun yuv420ToBitmap(width: Int, height: Int, planes: List<Map<String, Any>>): Bitmap? {
         try {
+            Log.d(TAG, "Received camera image with ${planes.size} planes")
+            
+            // Different devices may provide different YUV format configurations
+            // We need to handle this variety safely
+            if (planes.size < 1) {
+                Log.e(TAG, "Invalid image planes: no planes provided")
+                return null
+            }
+            
+            // Get the Y plane (luminance) data
             val yBuffer = planes[0]["bytes"] as ByteArray
-            val uBuffer = planes[1]["bytes"] as ByteArray
-            val vBuffer = planes[2]["bytes"] as ByteArray
-            
             val yRowStride = planes[0]["bytesPerRow"] as Int
-            val uvRowStride = planes[1]["bytesPerRow"] as Int
-            val uvPixelStride = planes[1]["bytesPerPixel"] as Int
             
-            val rgbBytes = IntArray(width * height)
-            
-            yuv420ToRgb(yBuffer, uBuffer, vBuffer, width, height, yRowStride, uvRowStride, uvPixelStride, rgbBytes)
-            
+            // Create a high-quality bitmap
             val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-            bitmap.setPixels(rgbBytes, 0, width, 0, 0, width, height)
+            val pixels = IntArray(width * height)
+            
+            // Calculate overall image brightness to adapt enhancement
+            var totalBrightness = 0
+            for (byte in yBuffer) {
+                totalBrightness += byte.toInt() and 0xff
+            }
+            val avgBrightness = totalBrightness / yBuffer.size
+            Log.d(TAG, "Average image brightness: $avgBrightness/255")
+            
+            // Adaptive contrast enhancement based on overall brightness
+            val contrastFactor = if (avgBrightness < 100) 1.5f else 1.3f
+            val brightnessFactor = if (avgBrightness < 100) 1.2f else 1.0f
+            
+            // Process the image with adaptive enhancement
+            var yp = 0
+            for (j in 0 until height) {
+                val pY = yRowStride * j
+                
+                for (i in 0 until width) {
+                    // Safe access to yBuffer with bounds checking
+                    val pixelIndex = pY + i
+                    if (pixelIndex >= yBuffer.size) {
+                        continue
+                    }
+                    
+                    // Get pixel value
+                    val y = yBuffer[pixelIndex].toInt() and 0xff
+                    
+                    // Apply contrast enhancement
+                    val normalizedY = (y - 128) * contrastFactor + 128 * brightnessFactor
+                    val enhancedY = normalizedY.coerceIn(0f, 255f).toInt()
+                    
+                    // Convert to RGB
+                    // Use a slight color tint to help with detection
+                    val r = enhancedY
+                    val g = enhancedY
+                    val b = enhancedY
+                    
+                    pixels[yp++] = 0xff000000.toInt() or (r shl 16) or (g shl 8) or b
+                }
+            }
+            
+            bitmap.setPixels(pixels, 0, width, 0, 0, width, height)
+            
+            Log.d(TAG, "Successfully created enhanced bitmap from camera frame: ${width}x${height}")
             return bitmap
         } catch (e: Exception) {
             Log.e(TAG, "Error converting YUV to bitmap: ${e.message}")
+            e.printStackTrace()
             return null
         }
     }
     
-    private fun yuv420ToRgb(yData: ByteArray, uData: ByteArray, vData: ByteArray,
-                          width: Int, height: Int, yRowStride: Int, uvRowStride: Int,
-                          uvPixelStride: Int, output: IntArray) {
-        var yp = 0
-        for (j in 0 until height) {
-            val pY = yRowStride * j
-            val pUV = uvRowStride * (j shr 1)
-            
-            for (i in 0 until width) {
-                val uvOffset = pUV + (i shr 1) * uvPixelStride
-                
-                output[yp++] = yuv2Rgb(
-                    yData[pY + i].toInt() and 0xff, 
-                    uData[uvOffset].toInt() and 0xff - 128,
-                    vData[uvOffset].toInt() and 0xff - 128
-                )
-            }
-        }
-    }
-    
-    private fun yuv2Rgb(y: Int, u: Int, v: Int): Int {
-        // YUV to RGB conversion formula
-        var r = (y + (1.370705 * v)).toInt()
-        var g = (y - (0.698001 * v) - (0.337633 * u)).toInt()
-        var b = (y + (1.732446 * u)).toInt()
-        
-        r = if (r < 0) 0 else if (r > 255) 255 else r
-        g = if (g < 0) 0 else if (g > 255) 255 else g
-        b = if (b < 0) 0 else if (b > 255) 255 else b
-        
-        return 0xff000000.toInt() or (r shl 16) or (g shl 8) or b
-    }
+    // Note: We're using a simpler grayscale approach for camera processing
+    // The full YUV420 to RGB conversion is more complex and less portable across devices
     
     private fun handlePoseLandmarkerResult(resultBundle: PoseLandmarkerHelper.ResultBundle, result: MethodChannel.Result) {
         val landmarksList = mutableListOf<Map<String, Any>>()

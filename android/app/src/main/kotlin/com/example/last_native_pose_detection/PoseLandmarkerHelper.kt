@@ -18,7 +18,8 @@ class PoseLandmarkerHelper(
     var minPoseDetectionConfidence: Float = DEFAULT_POSE_DETECTION_CONFIDENCE,
     var minPoseTrackingConfidence: Float = DEFAULT_POSE_TRACKING_CONFIDENCE,
     var minPosePresenceConfidence: Float = DEFAULT_POSE_PRESENCE_CONFIDENCE,
-    var currentModel: Int = MODEL_POSE_LANDMARKER_FULL,
+    // Use lite model by default for better performance on mobile devices
+    var currentModel: Int = MODEL_POSE_LANDMARKER_LITE,
     var currentDelegate: Int = DELEGATE_CPU,
     var runningMode: RunningMode = RunningMode.IMAGE,
     val context: Context,
@@ -50,6 +51,7 @@ class PoseLandmarkerHelper(
     // the GPU delegate needs to be used on the thread that initialized the
     // Landmarker
     fun setupPoseLandmarker() {
+        Log.d(TAG, "Setting up PoseLandmarker with mode: $runningMode, model: $currentModel")
         // Set general pose landmarker options
         val baseOptionBuilder = BaseOptions.builder()
 
@@ -57,9 +59,11 @@ class PoseLandmarkerHelper(
         when (currentDelegate) {
             DELEGATE_CPU -> {
                 baseOptionBuilder.setDelegate(Delegate.CPU)
+                Log.d(TAG, "Using CPU delegate")
             }
             DELEGATE_GPU -> {
                 baseOptionBuilder.setDelegate(Delegate.GPU)
+                Log.d(TAG, "Using GPU delegate")
             }
         }
 
@@ -68,9 +72,10 @@ class PoseLandmarkerHelper(
                 MODEL_POSE_LANDMARKER_FULL -> "pose_landmarker_full.task"
                 MODEL_POSE_LANDMARKER_LITE -> "pose_landmarker_lite.task"
                 MODEL_POSE_LANDMARKER_HEAVY -> "pose_landmarker_heavy.task"
-                else -> "pose_landmarker_full.task"
+                else -> "pose_landmarker_lite.task" // Default to lite for better performance
             }
-
+        
+        Log.d(TAG, "Using model: $modelName")
         baseOptionBuilder.setModelAssetPath(modelName)
 
         // Check if runningMode is consistent with poseLandmarkerHelperListener
@@ -107,8 +112,10 @@ class PoseLandmarkerHelper(
             }
 
             val options = optionsBuilder.build()
+            Log.d(TAG, "Creating PoseLandmarker with detection confidence: $minPoseDetectionConfidence, tracking: $minPoseTrackingConfidence, presence: $minPosePresenceConfidence")
             poseLandmarker =
                 PoseLandmarker.createFromOptions(context, options)
+            Log.d(TAG, "PoseLandmarker successfully created")
         } catch (e: IllegalStateException) {
             poseLandmarkerHelperListener?.onError(
                 "Pose Landmarker failed to initialize. See error logs for " +
@@ -144,30 +151,57 @@ class PoseLandmarkerHelper(
         }
         
         val frameTime = SystemClock.uptimeMillis()
-
-        val matrix = Matrix().apply {
-            // Flip image if using front camera
-            if (isFrontCamera) {
-                postScale(-1f, 1f, bitmap.width.toFloat(), bitmap.height.toFloat())
-            }
-        }
         
-        val rotatedBitmap = if (isFrontCamera) {
-            Bitmap.createBitmap(
+        try {
+            Log.d(TAG, "Processing live camera frame: ${bitmap.width}x${bitmap.height}")
+            
+            // During testing, sometimes recreating the poseLandmarker with even lower thresholds
+            // can help detection when no poses are being found
+            if (frameTime % 50 == 0L && poseLandmarker != null) {
+                Log.d(TAG, "Trying to reinitialize pose detector with lower thresholds")
+                minPoseDetectionConfidence = 0.01f
+                minPoseTrackingConfidence = 0.01f
+                minPosePresenceConfidence = 0.01f
+                clearPoseLandmarker()
+                setupPoseLandmarker()
+            }
+            
+            val matrix = Matrix().apply {
+                // Flip image if using front camera
+                if (isFrontCamera) {
+                    postScale(-1f, 1f, bitmap.width.toFloat(), bitmap.height.toFloat())
+                }
+                
+                // Try a slightly different rotation each frame to catch poses at different angles
+                // This can help with detection in challenging conditions
+                val angle = ((frameTime % 20) - 10).toFloat() // Range from -10 to 9 degrees as float
+                if (angle != 0f) {
+                    postRotate(angle, bitmap.width / 2f, bitmap.height / 2f)
+                }
+            }
+            
+            val processedBitmap = Bitmap.createBitmap(
                 bitmap, 0, 0, bitmap.width, bitmap.height,
                 matrix, true
             )
-        } else {
-            bitmap
-        }
-
-        // Convert the input Bitmap object to an MPImage object to run inference
-        val mpImage = BitmapImageBuilder(rotatedBitmap).build()
-
-        detectAsync(mpImage, frameTime)
-        
-        if (isFrontCamera) {
-            rotatedBitmap.recycle()
+            
+            // Convert the input Bitmap object to an MPImage object to run inference
+            val mpImage = BitmapImageBuilder(processedBitmap).build()
+            
+            // Process the frame
+            detectAsync(mpImage, frameTime)
+            
+            if (processedBitmap != bitmap) {
+                processedBitmap.recycle()
+            }
+            
+            // Log that we've processed the frame
+            Log.d(TAG, "Successfully processed live camera frame at time $frameTime")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error processing live camera frame: ${e.message}")
+            e.printStackTrace()
+            poseLandmarkerHelperListener?.onError("Error processing live camera frame: ${e.message}")
         }
     }
 
@@ -268,6 +302,16 @@ class PoseLandmarkerHelper(
         val finishTimeMs = SystemClock.uptimeMillis()
         val inferenceTime = finishTimeMs - result.timestampMs()
 
+        // Log the detection results for debugging
+        val poseCount = result.landmarks().size
+        Log.d(TAG, "LiveStream result: detected $poseCount poses")
+        
+        if (poseCount > 0) {
+            // If poses were detected, log more details
+            val firstPose = result.landmarks()[0]
+            Log.d(TAG, "First pose has ${firstPose.size} landmarks")
+        }
+
         poseLandmarkerHelperListener?.onResults(
             ResultBundle(
                 listOf(result),
@@ -291,15 +335,15 @@ class PoseLandmarkerHelper(
 
         const val DELEGATE_CPU = 0
         const val DELEGATE_GPU = 1
-        const val DEFAULT_POSE_DETECTION_CONFIDENCE = 0.5F
-        const val DEFAULT_POSE_TRACKING_CONFIDENCE = 0.5F
-        const val DEFAULT_POSE_PRESENCE_CONFIDENCE = 0.5F
-        const val DEFAULT_NUM_POSES = 1
-        const val OTHER_ERROR = 0
-        const val GPU_ERROR = 1
         const val MODEL_POSE_LANDMARKER_FULL = 0
         const val MODEL_POSE_LANDMARKER_LITE = 1
         const val MODEL_POSE_LANDMARKER_HEAVY = 2
+        // Lowered confidence thresholds to make detection more sensitive
+        const val DEFAULT_POSE_DETECTION_CONFIDENCE = 0.2f
+        const val DEFAULT_POSE_TRACKING_CONFIDENCE = 0.2f
+        const val DEFAULT_POSE_PRESENCE_CONFIDENCE = 0.2f
+        const val OTHER_ERROR = 0
+        const val GPU_ERROR = 1
     }
 
     data class ResultBundle(

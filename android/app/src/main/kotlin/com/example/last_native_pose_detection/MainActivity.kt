@@ -121,9 +121,9 @@ class MainActivity : FlutterActivity(), PoseLandmarkerHelper.LandmarkerListener 
             
             // Process the video
             val resultBundle = poseLandmarkerHelper?.detectVideoFile(videoPath)
-            if (resultBundle != null) {
-                handlePoseLandmarkerResult(resultBundle, result)
-            } else {
+                    if (resultBundle != null) {
+                        handlePoseLandmarkerResult(resultBundle, result)
+                    } else {
                 result.error("DETECTION_ERROR", "Failed to process video with pose detector", null)
             }
         } catch (e: Exception) {

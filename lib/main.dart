@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:camera/camera.dart';
+import 'package:video_player/video_player.dart';
+import 'package:chewie/chewie.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -140,6 +142,11 @@ class _PoseDetectionHomeState extends State<PoseDetectionHome> with WidgetsBindi
   String? _videoPath;
   bool _isLiveDetection = false;
   
+  // Video player controllers
+  VideoPlayerController? _videoPlayerController;
+  ChewieController? _chewieController;
+  bool _isVideoInitialized = false;
+  
   // Store pose landmarks and inference time
   List<Map<String, dynamic>>? _landmarks;
   int? _inferenceTime;
@@ -157,7 +164,14 @@ class _PoseDetectionHomeState extends State<PoseDetectionHome> with WidgetsBindi
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _stopCamera();
+    _disposeVideoControllers();
     super.dispose();
+  }
+  
+  void _disposeVideoControllers() {
+    _chewieController?.dispose();
+    _videoPlayerController?.dispose();
+    _isVideoInitialized = false;
   }
   
   @override
@@ -268,16 +282,95 @@ class _PoseDetectionHomeState extends State<PoseDetectionHome> with WidgetsBindi
   }
   
   Future<void> _pickVideo() async {
-    final XFile? video = await _picker.pickVideo(source: ImageSource.gallery);
-    
-    if (video != null) {
+    try {
+      // Dispose existing video controllers
+      _disposeVideoControllers();
+      
+      final XFile? video = await _picker.pickVideo(source: ImageSource.gallery);
+      
+      if (video != null) {
+        print('Video picked: ${video.path}');
+        final videoFile = File(video.path);
+        
+        if (await videoFile.exists()) {
+          print('Video file exists, size: ${await videoFile.length()} bytes');
+          
+          setState(() {
+            _videoPath = video.path;
+            _imageFile = null;
+            _isLiveDetection = false;
+            _landmarks = null; // Clear previous landmarks
+          });
+          
+          // Initialize video player
+          await _initializeVideoPlayer(_videoPath!);
+          
+          // Show loading indicator
+          final scaffoldMessenger = ScaffoldMessenger.of(context);
+          scaffoldMessenger.showSnackBar(
+            const SnackBar(content: Text('Processing video...'))
+          );
+          
+          try {
+            await _processPoseFromVideo(_videoPath!);
+          } catch (e) {
+            print('Error processing video: $e');
+            scaffoldMessenger.showSnackBar(
+              SnackBar(content: Text('Error processing video: $e'))
+            );
+          }
+        } else {
+          print('Video file does not exist: ${video.path}');
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Selected video file could not be accessed'))
+          );
+        }
+      }
+    } catch (e) {
+      print('Error picking video: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error picking video: $e'))
+      );
+    }
+  }
+  
+  Future<void> _initializeVideoPlayer(String videoPath) async {
+    try {
+      // Create video player controller
+      final videoPlayerController = VideoPlayerController.file(File(videoPath));
+      await videoPlayerController.initialize();
+      
+      // Create chewie controller
+      final chewieController = ChewieController(
+        videoPlayerController: videoPlayerController,
+        aspectRatio: videoPlayerController.value.aspectRatio,
+        autoPlay: false,
+        looping: false,
+        showControls: true,
+        placeholder: const Center(child: CircularProgressIndicator()),
+        autoInitialize: true,
+        errorBuilder: (context, errorMessage) {
+          return Center(
+            child: Text(
+              'Error loading video: $errorMessage',
+              style: const TextStyle(color: Colors.white),
+            ),
+          );
+        },
+      );
+      
       setState(() {
-        _videoPath = video.path;
-        _imageFile = null;
-        _isLiveDetection = false;
+        _videoPlayerController = videoPlayerController;
+        _chewieController = chewieController;
+        _isVideoInitialized = true;
       });
       
-      await _processPoseFromVideo(_videoPath!);
+      print('Video player initialized successfully');
+    } catch (e) {
+      print('Error initializing video player: $e');
+      setState(() {
+        _isVideoInitialized = false;
+      });
     }
   }
   
@@ -325,14 +418,28 @@ class _PoseDetectionHomeState extends State<PoseDetectionHome> with WidgetsBindi
   
   Future<void> _processPoseFromVideo(String videoPath) async {
     try {
+      print('Processing video at path: $videoPath');
+      
+      // Make sure the file exists and is readable
+      final file = File(videoPath);
+      if (!await file.exists()) {
+        throw Exception('Video file does not exist');
+      }
+      
+      print('Video file size: ${await file.length()} bytes');
+      
       final result = await platform.invokeMethod('processVideo', {
         'videoPath': videoPath,
       });
+      
+      print('Received result from native code: ${result != null ? 'success' : 'null'}');
       
       if (result != null) {
         // Properly convert the landmarks data with explicit casting
         final landmarks = _convertLandmarksData(result['landmarks']);
         final inferenceTime = result['inferenceTime'] as int?;
+        
+        print('Converted landmarks data: ${landmarks.length} landmarks');
         
         setState(() {
           _landmarks = landmarks;
@@ -340,9 +447,18 @@ class _PoseDetectionHomeState extends State<PoseDetectionHome> with WidgetsBindi
           print('Pose detection complete: ${_landmarks?.length} landmarks found');
           print('Inference time: ${_inferenceTime ?? 'unknown'}ms');
         });
+        
+        // Show success message
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Video processed: ${landmarks.length} landmarks detected'))
+        );
+      } else {
+        throw Exception('No result returned from native code');
       }
     } catch (e) {
       print('Error during video processing: $e');
+      // Rethrow to allow the caller to handle it
+      rethrow;
     }
   }
 
@@ -576,13 +692,27 @@ class _PoseDetectionHomeState extends State<PoseDetectionHome> with WidgetsBindi
           fit: BoxFit.cover,
         ),
       );
+    } else if (_videoPath != null && _isVideoInitialized && _chewieController != null) {
+      // Return chewie video player when video is initialized
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: Chewie(controller: _chewieController!),
+      );
     } else if (_videoPath != null) {
+      // Show loading indicator if video path exists but player isn't initialized yet
       return ClipRRect(
         borderRadius: BorderRadius.circular(12),
         child: Container(
           color: Colors.black,
           child: const Center(
-            child: Icon(Icons.video_file, size: 64, color: Colors.white),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                CircularProgressIndicator(color: Colors.white),
+                SizedBox(height: 16),
+                Text('Loading video...', style: TextStyle(color: Colors.white)),
+              ],
+            ),
           ),
         ),
       );

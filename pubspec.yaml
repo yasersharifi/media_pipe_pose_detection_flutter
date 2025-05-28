@@ -38,6 +38,8 @@ dependencies:
   camera: ^0.10.5+9
   path_provider: ^2.1.2
   path: ^1.8.3
+  video_player: ^2.8.2
+  chewie: ^1.7.4
 
 dev_dependencies:
   flutter_test:

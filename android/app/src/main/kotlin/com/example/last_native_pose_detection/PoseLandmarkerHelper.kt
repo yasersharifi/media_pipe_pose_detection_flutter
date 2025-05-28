@@ -224,39 +224,111 @@ class PoseLandmarkerHelper(
         // Inference time is the difference between the system time at the start and finish of the
         // process
         val startTime = SystemClock.uptimeMillis()
-
-        var didErrorOccurred = false
-
-        // Load frames from the video and run the pose landmarker.
-        val retriever = MediaMetadataRetriever()
-        retriever.setDataSource(videoPath)
-        val videoLengthMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLong() ?: 0
-
-        // Get middle frame of the video
-        val centerTimeUs = videoLengthMs * 1000 / 2
-        val bitmap = retriever.getFrameAtTime(centerTimeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-            ?: return null
-
-        // Convert the input Bitmap object to an MPImage object to run inference
-        val mpImage = BitmapImageBuilder(bitmap).build()
-
-        // Run pose landmarker using MediaPipe Pose Landmarker API
-        val poseLandmarkerResult = poseLandmarker?.detect(mpImage)
         
-        retriever.release()
+        // Temporarily clear and recreate PoseLandmarker in IMAGE mode
+        // This is a workaround since MediaPipe's VIDEO mode doesn't support single frame detection
+        // We'll process the video frame as an image instead
+        val originalRunningMode = runningMode
+        clearPoseLandmarker()
+        
+        // Store current settings
+        val savedMinPoseDetectionConfidence = minPoseDetectionConfidence
+        val savedMinPoseTrackingConfidence = minPoseTrackingConfidence
+        val savedMinPosePresenceConfidence = minPosePresenceConfidence
+        val savedCurrentModel = currentModel
+        val savedCurrentDelegate = currentDelegate
+        
+        // Set up for image processing
+        runningMode = RunningMode.IMAGE
+        setupPoseLandmarker()
 
-        val inferenceTimeMs = SystemClock.uptimeMillis() - startTime
-
-        return if (poseLandmarkerResult != null) {
-            ResultBundle(
-                listOf(poseLandmarkerResult),
-                inferenceTimeMs,
-                bitmap.height,
-                bitmap.width
-            )
-        } else {
-            poseLandmarkerHelperListener?.onError("Pose Landmarker failed to detect on video frame.")
-            null
+        try {
+            // Load frames from the video and run the pose landmarker.
+            val retriever = MediaMetadataRetriever()
+            retriever.setDataSource(videoPath)
+            val videoLengthMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLong() ?: 0
+            
+            Log.d(TAG, "Video length: ${videoLengthMs}ms")
+            
+            // Get middle frame of the video
+            val centerTimeUs = videoLengthMs * 1000 / 2
+            val originalBitmap = retriever.getFrameAtTime(centerTimeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                ?: return null
+                
+            Log.d(TAG, "Retrieved video frame: ${originalBitmap.width}x${originalBitmap.height}, config: ${originalBitmap.config}")
+            
+            // Ensure the bitmap is in ARGB_8888 format which is required by MediaPipe
+            val bitmap = if (originalBitmap.config != Bitmap.Config.ARGB_8888) {
+                Log.d(TAG, "Converting bitmap to ARGB_8888 format")
+                val convertedBitmap = originalBitmap.copy(Bitmap.Config.ARGB_8888, false)
+                originalBitmap.recycle() // Free up the original bitmap
+                convertedBitmap
+            } else {
+                originalBitmap
+            }
+            
+            // Convert the input Bitmap object to an MPImage object to run inference
+            val mpImage = BitmapImageBuilder(bitmap).build()
+            
+            // Now use the correct method for image processing
+            Log.d(TAG, "Processing video frame in IMAGE mode")
+            val poseLandmarkerResult = poseLandmarker?.detect(mpImage)
+            
+            retriever.release()
+            
+            val inferenceTimeMs = SystemClock.uptimeMillis() - startTime
+            
+            // Free up resources for Bitmap if we're done with it
+            if (bitmap != originalBitmap) {
+                bitmap.recycle()
+            }
+            
+            // Store the result before restoring original configuration
+            val resultBundle = if (poseLandmarkerResult != null) {
+                Log.d(TAG, "Video pose detection successful")
+                ResultBundle(
+                    listOf(poseLandmarkerResult),
+                    inferenceTimeMs,
+                    bitmap.height,
+                    bitmap.width
+                )
+            } else {
+                Log.e(TAG, "Pose Landmarker failed to detect on video frame")
+                poseLandmarkerHelperListener?.onError("Pose Landmarker failed to detect on video frame.")
+                null
+            }
+            
+            // Restore original settings
+            clearPoseLandmarker()
+            runningMode = originalRunningMode
+            minPoseDetectionConfidence = savedMinPoseDetectionConfidence
+            minPoseTrackingConfidence = savedMinPoseTrackingConfidence
+            minPosePresenceConfidence = savedMinPosePresenceConfidence
+            currentModel = savedCurrentModel
+            currentDelegate = savedCurrentDelegate
+            setupPoseLandmarker()
+            
+            return resultBundle
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in video processing: ${e.message}")
+            poseLandmarkerHelperListener?.onError("Error in video processing: ${e.message}")
+            
+            // Restore original settings even on error
+            try {
+                clearPoseLandmarker()
+                runningMode = originalRunningMode
+                minPoseDetectionConfidence = savedMinPoseDetectionConfidence
+                minPoseTrackingConfidence = savedMinPoseTrackingConfidence
+                minPosePresenceConfidence = savedMinPosePresenceConfidence
+                currentModel = savedCurrentModel
+                currentDelegate = savedCurrentDelegate
+                setupPoseLandmarker()
+            } catch (e2: Exception) {
+                Log.e(TAG, "Error restoring original settings: ${e2.message}")
+            }
+            
+            return null
         }
     }
 

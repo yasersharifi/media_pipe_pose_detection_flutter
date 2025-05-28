@@ -13,89 +13,93 @@ class VideoPosePage extends StatefulWidget {
 }
 
 class _VideoPosePageState extends State<VideoPosePage> {
-  static const platform = MethodChannel('com.example.last_native_pose_detection/pose_detection');
-  
+  static const platform = MethodChannel(
+    'com.example.last_native_pose_detection/pose_detection',
+  );
+
   final ImagePicker _picker = ImagePicker();
   String? _videoPath;
   List<Map<String, dynamic>>? _landmarks;
   int? _inferenceTime;
   bool _isProcessing = false;
-  
+
   // Video player controllers
   VideoPlayerController? _videoPlayerController;
   ChewieController? _chewieController;
   bool _isVideoInitialized = false;
-  
+
   @override
   void dispose() {
     _disposeVideoControllers();
     super.dispose();
   }
-  
+
   void _disposeVideoControllers() {
     _chewieController?.dispose();
     _videoPlayerController?.dispose();
     _isVideoInitialized = false;
   }
-  
+
   Future<void> _pickVideo() async {
     setState(() {
       _isProcessing = true;
       _landmarks = null;
       _inferenceTime = null;
     });
-    
+
     // Dispose existing video controllers
     _disposeVideoControllers();
-    
+
     try {
       final XFile? video = await _picker.pickVideo(source: ImageSource.gallery);
-      
+
       if (video != null) {
         print('Video picked: ${video.path}');
         final videoFile = File(video.path);
-        
+
         if (await videoFile.exists()) {
           print('Video file exists, size: ${await videoFile.length()} bytes');
-          
+
           setState(() {
             _videoPath = video.path;
           });
-          
+
           // Initialize video player
           await _initializeVideoPlayer(_videoPath!);
-          
+
           // Show loading indicator
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Processing video...'))
-          );
-          
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('Processing video...')));
+
           await _processPoseFromVideo(_videoPath!);
         } else {
           print('Video file does not exist: ${video.path}');
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Selected video file could not be accessed'))
+            const SnackBar(
+              content: Text('Selected video file could not be accessed'),
+            ),
           );
         }
       }
     } catch (e) {
       print('Error picking video: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error picking video: $e'))
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Error picking video: $e')));
     } finally {
       setState(() {
         _isProcessing = false;
       });
     }
   }
-  
+
   Future<void> _initializeVideoPlayer(String videoPath) async {
     try {
       // Create video player controller
       final videoPlayerController = VideoPlayerController.file(File(videoPath));
       await videoPlayerController.initialize();
-      
+
       // Create chewie controller
       final chewieController = ChewieController(
         videoPlayerController: videoPlayerController,
@@ -114,13 +118,13 @@ class _VideoPosePageState extends State<VideoPosePage> {
           );
         },
       );
-      
+
       setState(() {
         _videoPlayerController = videoPlayerController;
         _chewieController = chewieController;
         _isVideoInitialized = true;
       });
-      
+
       print('Video player initialized successfully');
     } catch (e) {
       print('Error initializing video player: $e');
@@ -129,29 +133,34 @@ class _VideoPosePageState extends State<VideoPosePage> {
       });
     }
   }
-  
+
   Future<void> _processPoseFromVideo(String videoPath) async {
     try {
       final result = await platform.invokeMethod('processVideo', {
         'videoPath': videoPath,
       });
-      
+
       // Handle the result properly with type casting
       setState(() {
         // Safely convert the landmarks from platform channel
         if (result['landmarks'] != null) {
           final landmarksList = result['landmarks'] as List<dynamic>;
-          _landmarks = landmarksList
-              .map((item) => Map<String, dynamic>.from(item as Map<Object?, Object?>))
-              .toList();
-          
+          _landmarks =
+              landmarksList
+                  .map(
+                    (item) => Map<String, dynamic>.from(
+                      item as Map<Object?, Object?>,
+                    ),
+                  )
+                  .toList();
+
           // Extract inference time
           _inferenceTime = result['inferenceTime'] as int?;
-          
+
           // Log landmarks instead of drawing them
           print('Video pose detection: ${_landmarks!.length} landmarks found');
           print('Inference time: ${_inferenceTime}ms');
-          
+
           // Log detailed landmark information
           if (_landmarks!.isNotEmpty) {
             print('Landmark details:');
@@ -168,18 +177,20 @@ class _VideoPosePageState extends State<VideoPosePage> {
     } on PlatformException catch (e) {
       print('Error processing video: $e');
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error processing video: ${e.message}'))
+        SnackBar(content: Text('Error processing video: ${e.message}')),
       );
     } catch (e) {
       print('Unexpected error processing video: $e');
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Unexpected error processing video: $e'))
+        SnackBar(content: Text('Unexpected error processing video: $e')),
       );
     }
   }
-  
+
   Widget _buildVideoPreview() {
-    if (_videoPath != null && _isVideoInitialized && _chewieController != null) {
+    if (_videoPath != null &&
+        _isVideoInitialized &&
+        _chewieController != null) {
       return Chewie(controller: _chewieController!);
     } else if (_videoPath != null) {
       return Container(
@@ -198,13 +209,11 @@ class _VideoPosePageState extends State<VideoPosePage> {
     } else {
       return Container(
         color: Colors.grey[300],
-        child: const Center(
-          child: Text('No video selected'),
-        ),
+        child: const Center(child: Text('No video selected')),
       );
     }
   }
-  
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -239,7 +248,10 @@ class _VideoPosePageState extends State<VideoPosePage> {
               children: [
                 Text(
                   'Landmarks detected: ${_landmarks?.length ?? 0}',
-                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
                 if (_inferenceTime != null)
                   Text(
@@ -259,12 +271,19 @@ class _VideoPosePageState extends State<VideoPosePage> {
             child: ElevatedButton(
               onPressed: _isProcessing ? null : _pickVideo,
               style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 32,
+                  vertical: 16,
+                ),
                 minimumSize: const Size.fromHeight(50),
               ),
-              child: _isProcessing
-                ? const CircularProgressIndicator()
-                : const Text('Pick Video', style: TextStyle(fontSize: 18)),
+              child:
+                  _isProcessing
+                      ? const CircularProgressIndicator()
+                      : const Text(
+                        'Pick Video',
+                        style: TextStyle(fontSize: 18),
+                      ),
             ),
           ),
         ],
